@@ -8,27 +8,23 @@ interface InitialConfProps {
   height?: number;
 }
 
-interface DrawElemBaseProps {
+interface InitialTriangleProps {
   type: DrawImageType;
-  src?: string;
-  pos?: PositionProps;
+  src: string;
+  pos: [number, number, number, number];
 }
 
-interface AddDrawElementProps extends DrawElemBaseProps {
-  center: PositionProps;
+interface TriangleProps extends InitialTriangleProps {
+  id: number;
   movable: boolean;
   zIndex: number;
-  polygon: PositionProps[];
-  selected: boolean;
   angle: number;
-  scale: number;
-  pos: PositionProps;
-  action: MouseGesture;
+  scale: [number, number];
 }
 
-interface DrawImageProps extends AddDrawElementProps{
-  id: number;
-  zIndex: number;
+interface SelectedProps {
+  ind: number;
+  target: TriangleProps | null;
 }
 
 interface MouseDownProps {
@@ -54,12 +50,16 @@ export default class Draw {
 
   private _outline_color: string;
 
-  private _list: DrawImageProps[];
+  private _list: TriangleProps[];
 
   private throtteDraw: () => void;
 
-  static RotateAmp: number = 0.04;
+  static RotateAmp: number = 1;
   static BorderPadding: number = 2;
+
+  static RotateLineLength: number = 30;
+  static BorderLineWidth: number = 2;
+  static BorderPointArc: number = 10;
 
   private _mouse_down: MouseDownProps;
 
@@ -67,9 +67,15 @@ export default class Draw {
 
   private _indexMax: number;
 
+  private _image_cache: {[_:string]: HTMLImageElement};
+
+  private _selected: SelectedProps;
+
+  private action: MouseGesture;
+
   constructor(canvas: HTMLCanvasElement, conf: InitialConfProps = {
-    width: 1920,
-    height: 1080
+    width: 1920 * 2,
+    height: 1080 * 2
   }) {
     this._canvas = canvas;
     this._context = canvas.getContext('2d') as CanvasRenderingContext2D;
@@ -85,7 +91,7 @@ export default class Draw {
     window.addEventListener('resize', this.throtteDraw);
     window.addEventListener('keydown', this.handleKeyDown.bind(this));
     this._canvas.addEventListener('mousedown', this.handleMouseDown.bind(this));
-    this._canvas.addEventListener('mousemove', throtte(this.handleMouseMove.bind(this), 30));
+    this._canvas.addEventListener('mousemove', throtte(this.handleMouseMove.bind(this), 10));
     this._canvas.addEventListener('mouseout', this.handleMouseUp.bind(this));
     this._canvas.addEventListener('mouseup', this.handleMouseUp.bind(this));
 
@@ -110,6 +116,14 @@ export default class Draw {
     this._rotation_radius = 4;
     this._indexMax = 0;
 
+    this._image_cache = {};
+    this._selected = {
+      ind: -1,
+      target: null
+    };
+
+    this.action = null;
+
     this._resize();
   }
 
@@ -132,7 +146,6 @@ export default class Draw {
     this._scale = this._scaleCalulate();
     log.info('scale', this._scale);
     this.draw();
-    // this.draw();
   }
 
   private _getters<T>(obj: {
@@ -145,27 +158,23 @@ export default class Draw {
     return _default as T;
   }
 
-  addBuilder(config: AddDrawElementProps): DrawImageProps {
+  addBuilder(config: InitialTriangleProps): TriangleProps {
     return {
       id: Date.now(),
       movable: this._getters(config, 'movable', true),
-      zIndex: config.zIndex || this._indexMax++,
+      zIndex: this._indexMax++,
       type: config.type,
       src: config.src || '',
-      selected: false,
-      polygon: [],
-      center: [0, 0],
       angle: 0,
-      action: null,
-      scale: 1,
-      pos: this._getters(config, 'pos', [0, 0])
+      scale: [1, 1],
+      pos: this._getters(config, 'pos', [0, 0, 0, 0]),
     };
   }
 
-  add(config: DrawElemBaseProps) {
+  add(config: InitialTriangleProps) {
     const id = Date.now();
 
-    this._list.push(this.addBuilder(config as AddDrawElementProps));
+    this._list.push(this.addBuilder(config));
 
     log.info(`add one [ ${id} ]`)
 
@@ -182,43 +191,79 @@ export default class Draw {
 
   private _loadImg(src: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
+      if (this._image_cache[src]) {
+        resolve(this._image_cache[src]);
+        return;
+      }
+
       const img = new Image();
-      img.onload = () => resolve(img);
+      img.onload = () => {
+        this._image_cache[src] = img;
+        resolve(img);
+      }
       img.onerror = () => reject(new Error('Failed to load image'));
       img.src = src;
     });
   }
 
-  async drawImage(ele: DrawImageProps) {
+  private _getPointAndCenter(elem: TriangleProps) {
+    return {
+      polygon: this._getPoint(elem),
+      center: this._getImgCenter(elem)
+    };
+  }
+
+  // 获取矩形中心点
+  private _getImgCenter(elem: TriangleProps): PositionProps {
+    const { pos: [x, y, w, h] } = elem;
+    return [(x + w / 2), (y + h / 2)];
+  }
+
+  // 获取矩形顶点
+  private _getPoint(ele: TriangleProps): PositionProps[] {
+    const { pos: [x, y, width, height ] } = ele;
+
+    return [
+      [x, y],
+      [x + width, y],
+      [x + width, y + height],
+      [x, y + height]
+    ];
+  }
+
+  async drawImage(ele: TriangleProps) {
     const ctx = this._context_offscreen;
 
     const _img = await this._loadImg(ele.src as string);
-
-    const [left, top] = ele.pos;
-    ele.polygon = [
-      [left, top],
-      [left, (top + _img.height)],
-      [(left + _img.width), (top + _img.height)],
-      [(left + _img.width), top],
-    ];
-
-    ele.center = this._calculateCentroid(ele.polygon);
+    if (ele.pos[2] === 0) {
+      ele.pos[2] = _img.width;
+      ele.pos[3] = _img.height;
+    }
 
     ctx.save();
-    ctx.translate(ele.center[0] * this._scale, ele.center[1] * this._scale);
-    // ctx.moveTo(ele.center[0] * this._scale, ele.center[1] * this._scale);
+
+    const [sx, sy] = ele.scale;
+    ctx.scale(sx * this._scale, sy * this._scale);
+
+    const [centex, centery] = this._getImgCenter(ele);
+    ctx.translate(centex, centery);
     ctx.rotate(ele.angle * Draw.RotateAmp);
-    // ctx.rotate(count++ * 30);
+
+    const [w, h] = ele.pos.slice(2);
     ctx?.drawImage(
       _img, 
-      -0.5 * _img.width * this._scale, -0.5 * _img.height * this._scale,
-      _img.width * this._scale, _img.height * this._scale
+      -0.5 * w, -0.5 * h,
+      w, h
     );
-    this.drawPolygonWithOutline(ele, 1, ele.selected ? '#f00' : 'rgba(200, 200, 200, 0.5)')
+
+    ctx.translate(-centex, -centery);
+
+    if (this._selected.target?.id === ele.id) {
+      this._draw_outer_helper(ele);
+    }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.restore();
 
-    ele.selected && this._helper_rotate_icon(left + _img.width / 2, top + _img.height / 2);
   }
 
   private _getNormal(p1: PositionProps, p2: PositionProps) {
@@ -269,36 +314,65 @@ export default class Draw {
     return outline;
   }
 
-  /**
-   * 绘制多边形外框
-   * 
-   * @param polygon 多边形顶点
-   * @param offset [offset=2] 偏移
-   * 
-   * @returns
-   * */ 
-  drawPolygonWithOutline(elem: DrawImageProps, offset: number = Draw.BorderPadding, color: string = this._outline_color) {
-    const outline = this._getOuterPoints(elem.polygon, offset);
-
-    // 绘制外框
-    this._context_offscreen.beginPath();
-    this._context_offscreen.moveTo((outline[0][0] - elem.center[0]) * this._scale, (outline[0][1] - elem.center[1]) * this._scale);
-    for (let i = 1; i < outline.length; i++) {
-      this._context_offscreen.lineTo((outline[i][0] - elem.center[0]) * this._scale, (outline[i][1] - elem.center[1]) * this._scale);
-    }
-    this._context_offscreen.closePath();
-    this._context_offscreen.strokeStyle = color;
-    this._context_offscreen.setLineDash([5, 10]);
-    this._context_offscreen.stroke();
-    this._context_offscreen.setLineDash([]);
-  }
-
   private _getSelected() {
-    return this._list.find((item => item.selected));
+    return this._list.find((item => this._selected.target?.id === item.id));
   }
 
   handleMouseUp(e: MouseEvent) {
     this._mouse_down.status = false;
+  }
+
+  private _calculateRotateAngle(center: PositionProps, pointA: PositionProps, pointB: PositionProps) {
+    // 计算向量 CA 和 CB
+    const ax = pointA[0] - center[0], ay = pointA[1] - center[1];
+    const bx = pointB[0]- center[0], by = pointB[1] - center[1];
+
+    // 计算向量 CA 和 CB 的点积和叉积
+    // const dotProduct = ax * bx + ay * by;
+    // const crossProduct = ax * by - ay * bx;
+
+    // // 计算角度，使用 Math.atan2 处理角度方向
+    const angle_a = Math.atan2(ay, ax);
+    const angle_b = Math.atan2(by, bx);
+    // const angle = Math.atan2(ay, ax);
+    let delta = angle_b - angle_a;
+
+    return delta;
+  }
+
+  private _handleScale(pos1: PositionProps, elem: TriangleProps) {
+    let { pos: [x, y, w, h] } = elem;
+    const [px, py] = this._caculatePointVarAngle(pos1, this._getImgCenter(elem), elem.angle);
+
+    switch (this._selected.ind) {
+      case 0: // 左上角
+          w += x - px;
+          h += y - py;
+          x = px;
+          y = py;
+          break;
+      case 1: // 右上角
+          w = px - x;
+          h += y - py;
+          y = py;
+          break;
+      case 3: // 左下角
+          w += x - px;
+          h = py - y;
+          x = px;
+          break;
+      case 2: // 右下角
+          w = px - x;
+          h = py - y;
+          break;
+    }
+
+    elem.pos = [x, y, w, h];
+    elem.scale = [this._toFixed(w / elem.pos[2]), this._toFixed(h / elem.pos[3])];
+  }
+
+  private _toFixed(num: number, precison: number = 2) {
+    return Math.round(num * Math.pow(10, precison)) / Math.pow(10, precison);
   }
 
   handleMouseMove(e: MouseEvent) {
@@ -321,19 +395,18 @@ export default class Draw {
       const offsetX = e.offsetX - this._mouse_down.x;
       const offsetY = e.offsetY - this._mouse_down.y;
 
-      if (_selected.action === 'rotate') {
-        let _angle = _selected.angle;
+      if (this.action === 'rotate') {
 
-        let angle = Math.atan2(e.offsetY - this._mouse_down.y, e.offsetX - this._mouse_down.x);
-
-        // angle = Math.abs(angle)
-
-        _angle += angle;
-
-        _selected.angle = _angle;
-      } else if (_selected.action === 'move') {
+        let _angle = this._calculateRotateAngle(this._getImgCenter(this._selected.target as TriangleProps), [this._mouse_down.x, this._mouse_down.y], [e.offsetX, e.offsetY])
+        
+        _selected.angle = (_selected.angle + _angle) % (2 * Math.PI);
+      } else if (this.action === 'move') {
         _selected.pos[0] += offsetX / this._scale;
         _selected.pos[1] += offsetY / this._scale;
+      } else if (this.action === 'scale') {
+        const [x, y] = [e.offsetX / this._scale, e.offsetY / this._scale];
+
+        this._handleScale([x, y], _selected);
       }
 
       this._mouse_down.x = e.offsetX;
@@ -348,22 +421,10 @@ export default class Draw {
     this._mouse_down.status = true;
     this._mouse_down.x = e.offsetX;
     this._mouse_down.y = e.offsetY;
-    console.log(e.offsetX, e.offsetY, this._scale);
-    console.log(e.offsetX / this._scale, e.offsetY / this._scale);
 
-    const _prev_selected = this._getSelected();
+    this._checkSelect(e.offsetX / this._scale, e.offsetY / this._scale);
 
-    if (_prev_selected) {
-      _prev_selected.selected = false;
-    }
-
-    const _elem: AddDrawElementProps | undefined = this._checkSelect(e.offsetX / this._scale, e.offsetY / this._scale);
-
-    if (_elem) {
-      _elem.selected = true;
-    }
-
-    if (!this._getSelected()) {
+    if (!this._selected.target) {
       this._mouse_down.status = false;
     }
 
@@ -372,8 +433,7 @@ export default class Draw {
 
   handleKeyDown(e: KeyboardEvent) {
     if (e.key === 'Backspace' || e.key === 'Delete') {
-      const ind = this._list.findIndex((ll) => ll.selected);
-      console.log(ind)
+      const ind = this._list.findIndex((ll) => ll.id === this._selected.target?.id);
 
       if (ind >= 0) {
         this._list.splice(ind, 1);
@@ -388,15 +448,15 @@ export default class Draw {
   }
 
   // 
-  private _caculatePointVarAngle(points: PositionProps[], center: PositionProps, angle: number = 0): PositionProps[] {
-    if (angle === 0) return points;
+  private _caculatePointVarAngle(point: PositionProps, center: PositionProps, angle: number = 0): PositionProps {
+    if (angle === 0) return point;
 
-    const _p: PositionProps[] = points.map((p: PositionProps) => ([
-      (p[0] - center[0]) * Math.cos(angle) - (p[1] - center[1]) * Math.sin(angle) + center[0],
-      (p[0] - center[0]) * Math.sin(angle) + (p[1] - center[1]) * Math.cos(angle) + center[1],
-    ]));
+    const dx = point[0] - center[0];
+    const dy = point[1] - center[1];
 
-    return this._getOuterPoints(_p, Draw.BorderPadding);
+    return [dx * Math.cos(-angle) - dy * Math.sin(-angle) + center[0],
+      dx * Math.sin(-angle) + dy * Math.cos(-angle) + center[1],
+    ];
   }
 
   /**
@@ -408,18 +468,15 @@ export default class Draw {
    * 
    * @returns { boolean }
    * */ 
-  private _isPointInPolygon(elem: AddDrawElementProps, pos: PositionProps): boolean {
-    const { angle, center } = elem;
+  private _isPointInPolygon(elem: TriangleProps, pos: PositionProps): boolean {
+    const { angle } = elem;
+    const { polygon, center } = this._getPointAndCenter(elem);
 
-    // 重新计算多边形的顶点
-    const polygon = this._caculatePointVarAngle(elem.polygon, center, angle * Draw.RotateAmp);
-    // elem.polygon = { ...polygon };
-    // console.log(elem.polygon, angle, pos, center);
-    // console.log(polygon);
+    // 重新交互点
+    const [x, y] = this._caculatePointVarAngle(pos, center, angle * Draw.RotateAmp);
 
     let inside = false;
     const n = polygon.length;
-    const [x, y] = pos;
 
     for (let i = 0, j = n - 1; i < n; j = i++) {
         const xi = polygon[i][0], yi = polygon[i][1];
@@ -434,7 +491,7 @@ export default class Draw {
   }
 
   /**
-   * 判断坐标是否在圆内部
+   * 判断坐标是否在旋转交互点
    * 
    * @param center 圆心坐标
    * @param radius 圆半径
@@ -442,8 +499,37 @@ export default class Draw {
    * 
    * @returns { boolean }
    * */ 
-  private _isPointInCircle(center: PositionProps, radius: number, pos: PositionProps) {
-    return Math.pow(pos[0] - center[0], 2) + Math.pow(pos[1] - center[1], 2) <= radius * radius;
+  private _isPointOnRotate(elem: TriangleProps, pos: PositionProps) {
+    const { angle } = elem;
+    const { polygon, center } = this._getPointAndCenter(elem);
+    const _pos = this._icon_point_rotate(polygon);
+    const c = this._caculatePointVarAngle(pos, center, angle);
+
+    return Math.pow(_pos[0] - c[0], 2) + Math.pow(_pos[1] - c[1], 2) <= Draw.BorderPointArc * Draw.BorderPointArc;
+  }
+
+  /**
+   * 获取交互点在缩放交互点中的索引
+   * 
+   * @param center 圆心坐标
+   * @param radius 圆半径
+   * @param pos 目标坐标
+   * 
+   * @returns { number }
+   * */ 
+  private _getIndexOnBorderPoint(elem: TriangleProps, pos: PositionProps) {
+    const { angle } = elem;
+    const { polygon, center } = this._getPointAndCenter(elem);
+    const _pos = this._caculatePointVarAngle(pos, center, angle);
+
+    for(let i = 0; i < polygon.length; i++) {
+      const p = polygon[i];
+      if (Math.pow(p[0] - _pos[0], 2) + Math.pow(p[1] - _pos[1], 2) <= Draw.BorderPointArc * Draw.BorderPointArc) {
+        return i;
+      }
+    }
+
+    return -1;
   }
 
   /**
@@ -482,37 +568,41 @@ export default class Draw {
   }
 
   private _checkSelect(x: number, y: number) {
-    let _selected;
+    this._selected = {
+      ind: -1,
+      target: null
+    };
+
     for(let i = this._list.length - 1; i >= 0; i--) {
       const elem = this._list[i];
       if (!elem.movable) continue;
       // console.log(x, y, elem.polygon)
 
-      if (!elem.polygon) continue;
+      if (this._isPointOnRotate(elem, [x, y])) {
+        this._selected.target = elem;
+        this.action = 'rotate';
+        break;
+      }
+
+      const _scaleIndex = this._getIndexOnBorderPoint(elem, [x, y]);
+      if (_scaleIndex >= 0) {
+        this._selected.target = elem;
+        this._selected.ind = _scaleIndex;
+        this.action = 'scale';
+        break;
+      }
 
       if (this._isPointInPolygon(elem, [x, y])) {
-        _selected = elem;
+        this._selected.target = elem;
 
-        if (_selected.zIndex !== this._indexMax) {
-          _selected.zIndex = ++this._indexMax;
+        if (this._selected.target.zIndex !== this._indexMax) {
+          this._selected.target.zIndex = ++this._indexMax;
         }
 
-        if (this._isPointOnBorder(elem.polygon, [x, y])) {
-          _selected.action = 'scale';
-          break;
-        }
-
-        if (this._isPointInCircle(elem.center, this._rotation_radius * 2 / this._scale, [x, y])) {
-          _selected.action = 'rotate';
-          break;
-        }
-
-        _selected.action = 'move';
+        this.action = 'move';
         break;
       }
     }
-
-    return _selected;
   }
 
   async draw() {
@@ -525,7 +615,6 @@ export default class Draw {
 
     log.info('exec')
     this._sort();
-
     for(let elem of this._list) {
       switch(elem.type) {
         case 'IMAGE': await this.drawImage(elem); break;
@@ -533,9 +622,10 @@ export default class Draw {
       }
     }
 
-    // this._context.clearRect(0, 0, this._canvas.width, this._canvas.height);
     this._context.clearRect(0, 0, this._canvas.width, this._canvas.height);
-    this._context.drawImage(this._canvas_offscreen, 0, 0);
+    if (this._canvas_offscreen.width > 0 && this._canvas_offscreen.height > 0) {
+      this._context.drawImage(this._canvas_offscreen, 0, 0);
+    }
   }
 
   /**
@@ -544,43 +634,54 @@ export default class Draw {
  private _is_select_rotation() {
 
  }
-
-  /**
-   * 绘制辅助类：可旋转标示
-   * */ 
-  private _helper_rotate_icon(_x: number, _y: number, color: string = '#f00') {
+  private _draw_outer_helper(elem: TriangleProps) {
+    const points = this._getPoint(elem);
     const ctx = this._context_offscreen;
-    const x = _x * this._scale;
-    const y = _y * this._scale;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillStyle = '#00f';
 
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
+    // points
+    for(let i = 0; i < points.length; i++) {
+      let [x, y] = points[i];
+      ctx.beginPath();
+      ctx.arc(x, y, Draw.BorderPointArc, 0, 2 * Math.PI);
+      ctx.fill();
+    }
 
-    const radius = this._rotation_radius;
-    const radiusOuter = radius * 2;
+    // lines
+    for(let i = 0; i < points.length; i++) {
+      let [x, y] = points[i];
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+      ctx.lineWidth = Draw.BorderLineWidth;
+    }
 
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.closePath();
+
+    const _x = ((points[1][0] - points[0][0]) / 2 + points[0][0]);
+    const _y = ((points[1][1] - points[0][1]) / 2 + points[0][1]);
+    const [_x1, _y1] = this._icon_point_rotate(points);
+
+    ctx.moveTo(_x, _y);
+    ctx.lineTo(_x, _y1);
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(x, y, radiusOuter, - 1 / 6 * Math.PI, 4 / 6 * Math.PI);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(x + radiusOuter * Math.cos(4 / 6 * Math.PI), y + radiusOuter * Math.sin(4 / 6 * Math.PI), 1, 0, 2 * Math.PI);
+    ctx.arc(_x, _y1, Draw.BorderPointArc, 0, 2 * Math.PI);
     ctx.fill();
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(x + radiusOuter * Math.cos(10 / 6 * Math.PI), y + radiusOuter * Math.sin(10 / 6 * Math.PI), 1, 0, 2 * Math.PI);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(x, y, radiusOuter, 5 / 6 * Math.PI, 10 / 6 * Math.PI);
-    ctx.stroke();
   }
+
+  // 旋转图标点
+  private _icon_point_rotate(points: PositionProps[], scale: number = 1): PositionProps {
+    const _x = ((points[1][0] - points[0][0]) / 2 + points[0][0]) * scale;
+    const _y = ((points[1][1] - points[0][1]) / 2 + points[0][1]) * scale;
+
+    return [_x, _y - Draw.RotateLineLength * scale];
+  }
+
 
   clear() {
     window.removeEventListener('resize', this.throtteDraw);

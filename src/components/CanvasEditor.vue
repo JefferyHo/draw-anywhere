@@ -28,7 +28,7 @@ onMounted(() => {
             let src = event.target.result;
             drawClient.add({
               src: src,
-              pos: [0, 0],
+              pos: [0, 0, 0, 0],
               type: 'IMAGE',
             });
           };
