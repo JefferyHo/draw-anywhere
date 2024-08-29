@@ -1,5 +1,6 @@
 import { throtte } from '../utils/common';
 import Log from '../utils/log';
+import Particle from './Particle';
 
 const log = Log('draw')
 
@@ -35,7 +36,7 @@ interface MouseDownProps {
 
 type PositionProps = [number, number];
 
-type DrawImageType = 'IMAGE' | 'VIDEO' | 'TRIANGLE' | 'RECTANGLE' | 'OUTLINE';
+type DrawImageType = 'IMAGE' | 'VIDEO' | 'TRIANGLE' | 'RECTANGLE' | 'OUTLINE' | 'PARTICAL';
 
 type MouseGesture = 'move' | 'rotate' | 'scale' | null;
 
@@ -563,9 +564,18 @@ export default class Draw {
     return [Cx, Cy];
   }
 
-  private _isPointOnBorder(points: PositionProps[], pos: PositionProps, tolerance = Draw.BorderPadding * 2) {
-    return false;
+  private _changeCursor(ind: number) {
+    let c = 'unset';
+    switch(ind) {
+      case 0: c = 'nw-resize'; break;
+      case 1: c = 'ne-resize'; break;
+      case 2: c = 'se-resize'; break;
+      case 3: c = 'sw-resize'; break;
+      case 4: c = 'move'; break;
+    }
+    this._canvas.style.cursor = c;
   }
+
 
   private _checkSelect(x: number, y: number) {
     this._selected = {
@@ -605,6 +615,16 @@ export default class Draw {
     }
   }
 
+  drawPartical() {
+    const particleInstance = new Particle(100, {
+      width: this._canvas.width,
+      height: this._canvas.height,
+      ctx: this._context
+    })
+
+    particleInstance.draw.call(particleInstance);
+  }
+
   async draw() {
     if (this._context === null) {
       log.warn('Not support canvas context');
@@ -616,8 +636,12 @@ export default class Draw {
     log.info('exec')
     this._sort();
     for(let elem of this._list) {
+      console.log(elem.type)
       switch(elem.type) {
         case 'IMAGE': await this.drawImage(elem); break;
+        case 'PARTICAL': 
+          this.drawPartical();
+          break;
         default: this.drawImage(elem);
       }
     }

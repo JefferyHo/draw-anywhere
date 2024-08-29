@@ -22,7 +22,7 @@ import SettingPanel from './components/Setting.vue';
 }
 
 .sider-wrap {
-  width: 240px;
+  width: 0px;
   background: darkslategray;
   height: 100%;
 }

@@ -13,6 +13,12 @@ onMounted(() => {
   }
 
   if (canvasOuter.value) {
+    drawClient.add({
+      src: '',
+      pos: [0, 0, 0, 0],
+      type: 'PARTICAL',
+    });
+
     // 拖拽事件
     canvasOuter.value.addEventListener('dragover', (e) => {
       e.preventDefault(); // 允许拖拽
